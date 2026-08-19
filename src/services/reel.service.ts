@@ -192,6 +192,7 @@ export class ReelService {
     if (!reel) throw new Error('Reel not found');
 
     if (userId) {
+      if (!reel.likedBy) reel.likedBy = [];
       if (!reel.likedBy.includes(userId as any)) {
         reel.likedBy.push(userId as any);
         reel.likes += 1;
