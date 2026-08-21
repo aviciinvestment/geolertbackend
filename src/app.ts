@@ -37,9 +37,14 @@ app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok', message: 'Backend is running' });
 });
 
-// SPA fallback — serve index.html for all non-API routes
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(clientDist, 'index.html'));
+// SPA fallback — serve index.html for all non-API GET routes
+// (Express 5 requires a named wildcard instead of '*')
+app.get('/*splat', (_req, res) => {
+  res.sendFile(path.join(clientDist, 'index.html'), (err) => {
+    if (err) {
+      res.status(404).json({ message: 'Not found' });
+    }
+  });
 });
 
 export default app;
