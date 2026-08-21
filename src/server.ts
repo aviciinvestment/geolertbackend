@@ -5,19 +5,20 @@ import { connectDB } from './utils/db';
 
 const PORT = process.env.PORT || 5000;
 
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://geolertfrontend.onrender.com';
+
 const server = http.createServer(app);
 
-// Setup Socket.io for real-time features
 export const io = new Server(server, {
   cors: {
-    origin: '*', // For development, allow all. In production, specify frontend URL
-    methods: ['GET', 'POST']
-  }
+    origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000'],
+    methods: ['GET', 'POST'],
+  },
 });
 
 io.on('connection', (socket) => {
   console.log(`New client connected: ${socket.id}`);
-  
+
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`);
   });

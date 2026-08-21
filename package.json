@@ -2,11 +2,12 @@
   "name": "server",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/server.js",
   "scripts": {
     "start": "node dist/server.js",
     "dev": "npx tsx watch src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "postinstall": "tsc"
   },
   "keywords": [],
   "author": "",

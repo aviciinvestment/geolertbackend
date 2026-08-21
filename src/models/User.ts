@@ -7,6 +7,7 @@ export interface IUser extends Document {
   avatar?: string;
   bio?: string;
   isAnonymous: boolean;
+  trustScore: number;
   googleId?: string;
   location?: {
     type: string;
@@ -24,6 +25,7 @@ const UserSchema: Schema = new Schema(
     avatar: { type: String },
     bio: { type: String, default: '' },
     isAnonymous: { type: Boolean, default: false },
+    trustScore: { type: Number, default: 50, min: 0, max: 100 },
     googleId: { type: String },
     location: {
       type: {

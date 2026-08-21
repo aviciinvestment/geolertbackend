@@ -27,8 +27,14 @@ export class ReelController {
       const filePath = req.file.path;
       const userId = (req as any).user?.id;
 
-      const lat = latitude ? parseFloat(latitude) : undefined;
-      const lng = longitude ? parseFloat(longitude) : undefined;
+      if (!latitude || !longitude) {
+        fs.unlinkSync(filePath);
+        res.status(400).json({ success: false, message: 'Location is required to upload a reel. Please enable location services.' });
+        return;
+      }
+
+      const lat = parseFloat(latitude);
+      const lng = parseFloat(longitude);
 
       const newReel = await ReelService.uploadReel(filePath, description, username, userId, isAnonymous === 'true', lat, lng);
 
@@ -153,6 +159,32 @@ export class ReelController {
     } catch (error) {
       console.error(error);
       res.status(500).json({ success: false, message: 'Failed to add video comment' });
+    }
+  }
+
+  // PATCH /api/reels/:id/resolve
+  async resolveReel(req: Request, res: Response): Promise<void> {
+    try {
+      const { resolution } = req.body;
+      if (resolution !== 'attended' && resolution !== 'false_report' && resolution !== 'pending') {
+        res.status(400).json({ success: false, message: 'resolution must be "attended", "false_report", or "pending"' });
+        return;
+      }
+      const reel = await ReelService.resolveReel(req.params.id as string, resolution);
+      res.status(200).json({ success: true, data: reel });
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error.message || 'Failed to resolve reel' });
+    }
+  }
+
+  // GET /api/reels/analytics
+  async getAnalytics(req: Request, res: Response): Promise<void> {
+    try {
+      const analytics = await ReelService.getAnalytics();
+      res.status(200).json({ success: true, data: analytics });
+    } catch (error) {
+      console.error('Analytics error:', error);
+      res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
     }
   }
 }

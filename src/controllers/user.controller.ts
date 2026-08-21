@@ -37,6 +37,7 @@ export class UserController {
           avatar: user.avatar,
           bio: user.bio,
           isAnonymous: user.isAnonymous,
+          trustScore: user.trustScore,
           createdAt: user.createdAt,
         },
         reels: enrichedReels,

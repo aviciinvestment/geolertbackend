@@ -13,10 +13,18 @@ export interface IReel extends Document {
   viewers?: number;
   userId?: mongoose.Types.ObjectId;
   likedBy?: mongoose.Types.ObjectId[];
-  location?: {
+  location: {
     type: string;
     coordinates: number[];
   };
+  aiAnalysis?: {
+    summary: string;
+    transcript: string;
+    description: string;
+    severityReason: string;
+  };
+  severity?: number;
+  status?: 'pending' | 'attended' | 'false_report';
   createdAt: Date;
 }
 
@@ -37,11 +45,21 @@ const ReelSchema: Schema = new Schema({
     type: {
       type: String,
       enum: ['Point'],
+      required: true,
     },
     coordinates: {
       type: [Number],
+      required: true,
     }
   },
+  aiAnalysis: {
+    summary: { type: String, default: '' },
+    transcript: { type: String, default: '' },
+    description: { type: String, default: '' },
+    severityReason: { type: String, default: '' },
+  },
+  severity: { type: Number, default: 0, min: 0, max: 1 },
+  status: { type: String, enum: ['pending', 'attended', 'false_report'], default: 'pending' },
   createdAt: { type: Date, default: Date.now }
 });
 
