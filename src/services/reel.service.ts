@@ -4,6 +4,8 @@ import View from '../models/View';
 import Comment, { IComment } from '../models/Comment';
 import cloudinary from '../utils/cloudinary';
 import { io } from '../server';
+import { reverseGeocode, geocodePlace, expandRegionName } from './geo.service';
+import { getAreaList, getAreaCoords, isKnownLga } from './lga.service';
 
 export class ReelService {
   /**
@@ -228,7 +230,15 @@ Return ONLY the JSON object.`
         }
       }
 
-      // Step 4: Save reel WITH analysis already attached
+      // Step 4: Resolve administrative region (country / state / LGA / area)
+      let region: { country?: string; state?: string; lga?: string; area?: string } | undefined;
+      try {
+        region = (await reverseGeocode(lat, lng)) || undefined;
+      } catch {
+        region = undefined;
+      }
+
+      // Step 5: Save reel WITH analysis already attached
       const reelData: any = {
         url: result.secure_url,
         description,
@@ -247,6 +257,8 @@ Return ONLY the JSON object.`
           severityReason: analysis.severityReason,
         },
         severity: analysis.severity,
+        region: region || {},
+        regionTagged: true,
       };
 
       const newReel = new Reel(reelData);
@@ -483,8 +495,7 @@ Return ONLY the JSON object.`
    * Get analytics data for the authority dashboard.
    * Returns daily event counts, resolution stats, and time-to-resolve.
    */
-  async getAnalytics(): Promise<any> {
-    const reels = await Reel.find({}).select('severity status createdAt userId').lean();
+  async getAnalytics(): Promise<any> {    const reels = await Reel.find({}).select('severity status createdAt userId').lean();
 
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -568,6 +579,358 @@ Return ONLY the JSON object.`
         resolutionRate: totalEvents > 0 ? Math.round(((totalAttended + totalFalse) / totalEvents) * 100) : 0,
       },
       severityDist,
+    };
+  }
+
+  // ---- Region backfill (background job) ----
+  private backfillRunning = false;
+  private lastBackfillKickAt = 0;
+  private failedTagAttempts = new Map<string, number>();
+
+  /**
+   * Reverse-geocode every reel that has no region tags yet.
+   * Runs in the BACKGROUND (never awaited by request handlers) in throttled
+   * batches so legacy reports become jurisdiction-scoped over time without
+   * ever blocking an API response.
+   */
+  async ensureRegionsBackfilled(force: boolean = false): Promise<void> {
+    const now = Date.now();
+    if (this.backfillRunning) return;
+    if (!force && now - this.lastBackfillKickAt < 30_000) return;
+
+    this.backfillRunning = true;
+    this.lastBackfillKickAt = now;
+
+    try {
+      const BATCH = 8;
+      let processed = 0;
+
+      while (processed < 400) {
+        // Re-tag anything untagged OR tagged before neighborhood (area)
+        // resolution existed, so legacy reports gain their area label.
+        const candidates = await Reel.find({
+          $or: [{ regionTagged: { $ne: true } }, { 'region.area': { $exists: false } }],
+        })
+          .select('location')
+          .sort({ createdAt: -1 })
+          .limit(BATCH * 3)
+          .lean();
+
+        const batch = candidates
+          .filter((r) => (this.failedTagAttempts.get(String(r._id)) ?? 0) < 3)
+          .slice(0, BATCH);
+
+        if (batch.length === 0) break;
+
+        await Promise.all(
+          batch.map(async (reel) => {
+            const coords = reel.location?.coordinates;
+            if (!coords || coords.length < 2) {
+              await Reel.updateOne({ _id: reel._id }, { $set: { regionTagged: true } });
+              return;
+            }
+            try {
+              const region = await reverseGeocode(coords[1], coords[0]);
+              if (!region) throw new Error('geocode failed');
+              await Reel.updateOne(
+                { _id: reel._id },
+                {
+                  $set: {
+                    region: { ...region, area: region.area ?? '' },
+                    regionTagged: true,
+                  },
+                }
+              );
+              this.failedTagAttempts.delete(String(reel._id));
+            } catch {
+              const fails = (this.failedTagAttempts.get(String(reel._id)) ?? 0) + 1;
+              this.failedTagAttempts.set(String(reel._id), fails);
+            }
+            processed++;
+          })
+        );
+      }
+    } finally {
+      this.backfillRunning = false;
+    }
+  }
+
+  /**
+   * Full data payload for the Super Admin jurisdiction dashboard.
+   * Everything (stats, charts, map markers, pending table, responders)
+   * is scoped to country+state from the admin's jurisdiction, and
+   * optionally narrowed further to a single LGA/province.
+   *
+   * Resilience: reels whose region tags haven't been resolved yet are still
+   * included when they fall within a sensible radius of the scope's center,
+   * so previously-reported events appear immediately.
+   */
+  async getJurisdictionDashboard(opts: {
+    country?: string;
+    state?: string;
+    lga?: string;
+    fallbackCenter?: [number, number] | null;
+  }): Promise<any> {
+    const { country, state, lga } = opts;
+    const hasJurisdiction = Boolean(country && state);
+    const selectedLga = lga && lga !== '__all__' ? lga : null;
+
+    // Kick off (non-blocking) region tagging for untagged reports
+    this.ensureRegionsBackfilled().catch(() => {});
+
+    // ---- Tagged scope query ----
+    const scopeQuery: Record<string, any> = {};
+    if (country) scopeQuery['region.country'] = { $in: expandRegionName(country) };
+    if (state) scopeQuery['region.state'] = { $in: expandRegionName(state) };
+    if (selectedLga) {
+      // Match either the LGA name or a neighborhood/district (e.g. Gwarinpa)
+      scopeQuery.$or = [
+        { 'region.lga': { $in: expandRegionName(selectedLga) } },
+        { 'region.area': selectedLga },
+      ];
+    }
+
+    const regionCollation = { locale: 'en', strength: 2 }; // case-insensitive
+
+    const taggedReels = hasJurisdiction
+      ? await Reel.find(scopeQuery)
+          .collation(regionCollation)
+          .select('severity status createdAt location region description url avatar username isAnonymous aiAnalysis.summary views likes comments')
+          .sort({ createdAt: -1 })
+          .limit(2000)
+          .lean()
+      : // No jurisdiction on the account → show everything
+        await Reel.find({})
+          .select('severity status createdAt location region description url avatar username isAnonymous aiAnalysis.summary views likes comments')
+          .sort({ createdAt: -1 })
+          .limit(2000)
+          .lean();
+
+    // ---- Scope center ----
+    // Priority: average of scoped reports -> selected LGA's known coords ->
+    // geocoded state -> admin's own location.
+    let center: [number, number] | null = null;
+    const withCoords = taggedReels.filter((r) => r.location?.coordinates?.length >= 2);
+    if (withCoords.length > 0) {
+      let latSum = 0;
+      let lngSum = 0;
+      for (const r of withCoords) {
+        latSum += r.location.coordinates[1];
+        lngSum += r.location.coordinates[0];
+      }
+      center = [latSum / withCoords.length, lngSum / withCoords.length];
+    } else if (selectedLga) {
+      center =
+        (await getAreaCoords(country, state, selectedLga)) ??
+        (state ? await geocodePlace(`${selectedLga}, ${state}`, country) : null);
+    } else if (hasJurisdiction) {
+      center = (await geocodePlace(state!, country)) ?? opts.fallbackCenter ?? null;
+    } else if (opts.fallbackCenter && opts.fallbackCenter.length === 2) {
+      center = opts.fallbackCenter;
+    }
+
+    // ---- Coordinate sweep around the scope's center ----
+    // Catches every report near the center by longitude/latitude, including
+    // legacy ones whose region tags haven't been resolved yet.
+    let nearbyReels: any[] = [];
+    if (hasJurisdiction && center) {
+      // Constitutional LGA → wider sweep; neighborhood/district → tight sweep
+      const radiusMeters = selectedLga
+        ? isKnownLga(country, state, selectedLga)
+          ? 12_000
+          : 5_000
+        : 60_000;
+      try {
+        nearbyReels = await Reel.aggregate([
+          {
+            $geoNear: {
+              near: { type: 'Point', coordinates: center },
+              distanceField: '_distanceM',
+              maxDistance: radiusMeters,
+              spherical: true,
+              query: { 'location.coordinates': { $exists: true } },
+            },
+          },
+          { $limit: 300 },
+        ]);
+      } catch {
+        nearbyReels = [];
+      }
+    }
+
+    // Merge + de-duplicate (untagged can't overlap tagged by construction,
+    // but guard anyway), newest first
+    const seen = new Set<string>();
+    const reels: any[] = [];
+    for (const r of [...taggedReels, ...nearbyReels]) {
+      const id = String(r._id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      reels.push(r);
+    }
+    reels.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    // ---- Headline stats ----
+    const realReports = reels.filter((r) => (r.status || 'pending') !== 'false_report');
+    const activeEmergencies = realReports.length;
+    const catered = realReports.filter((r) => r.status === 'attended').length;
+    const uncatered = realReports.filter((r) => !r.status || r.status === 'pending').length;
+    const falseReports = reels.length - realReports.length;
+
+    // ---- Severity breakdown (same buckets as the authority map legend) ----
+    const severityBreakdown = [
+      { name: 'Critical', value: 0, color: '#ef4444' },
+      { name: 'High', value: 0, color: '#f97316' },
+      { name: 'Medium', value: 0, color: '#eab308' },
+      { name: 'Low', value: 0, color: '#22c55e' },
+    ];
+    for (const r of realReports) {
+      const s = r.severity ?? 0;
+      if (s >= 0.8) severityBreakdown[0].value++;
+      else if (s >= 0.6) severityBreakdown[1].value++;
+      else if (s >= 0.4) severityBreakdown[2].value++;
+      else severityBreakdown[3].value++;
+    }
+
+    // ---- Incident activity (7 daily buckets ending today) ----
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const activityData: { time: string; incidents: number }[] = [];
+    const bucketCounts = new Array(7).fill(0);
+    for (const r of realReports) {
+      const ageDays = Math.floor(
+        (startOfToday.getTime() - new Date(r.createdAt).getTime()) / DAY_MS
+      );
+      if (ageDays >= 0 && ageDays < 7) {
+        bucketCounts[6 - ageDays]++;
+      }
+    }
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(startOfToday.getTime() - (6 - i) * DAY_MS);
+      activityData.push({
+        time: d.toLocaleDateString('en-US', { weekday: 'short' }),
+        incidents: bucketCounts[i],
+      });
+    }
+
+    // ---- Map markers (latest 150 real reports) ----
+    type MapReel = {
+      _id: any;
+      lat: number;
+      lng: number;
+      severity: number;
+      status: string;
+      description?: string;
+      aiSummary?: string;
+      url: string;
+      avatar?: string;
+      username: string;
+      isAnonymous: boolean;
+      area?: string;
+      createdAt: Date;
+      views?: number;
+      likes?: number;
+      comments?: number;
+    };
+    const mapReels: MapReel[] = [];
+    for (const r of realReports.slice(0, 150)) {
+      const coords = r.location?.coordinates;
+      if (!coords || coords.length < 2) continue;
+      mapReels.push({
+        _id: String(r._id),
+        lat: coords[1],
+        lng: coords[0],
+        severity: r.severity ?? 0,
+        status: r.status || 'pending',
+        description: r.description || '',
+        aiSummary: r.aiAnalysis?.summary || '',
+        url: r.url,
+        avatar: r.avatar,
+        username: r.isAnonymous ? 'Anonymous' : r.username,
+        isAnonymous: !!r.isAnonymous,
+        area:
+          (r.region as any)?.area ||
+          (r.region as any)?.lga ||
+          (r.region as any)?.state ||
+          undefined,
+        createdAt: r.createdAt,
+        views: r.views,
+        likes: r.likes,
+        comments: r.comments,
+      });
+    }
+
+    // ---- Pending / uncatered table rows (latest 10) ----
+    const pendingEmergencies = mapReels
+      .filter((m) => m.status === 'pending')
+      .slice(0, 10)
+      .map((m) => ({
+        id: String(m._id).slice(-6).toUpperCase(),
+        reelId: m._id,
+        area: m.area,
+        lat: m.lat,
+        lng: m.lng,
+        severity: m.severity,
+        reporter: m.username,
+        createdAt: m.createdAt,
+      }));
+
+    // ---- Areas selector: full LGA/province directory + every place seen
+    // in reports (LGAs and neighborhood/district names like Gwarinpa),
+    // deduped case-insensitively ----
+    let areas: string[] = [];
+    if (hasJurisdiction) {
+      const scopeBase = {
+        'region.country': { $in: expandRegionName(country) },
+        'region.state': { $in: expandRegionName(state) },
+      };
+      const [curatedAreas, taggedLgas, taggedAreas] = await Promise.all([
+        getAreaList(country, state),
+        Reel.distinct('region.lga', {
+          ...scopeBase,
+          'region.lga': { $nin: [null, ''] },
+        }).collation(regionCollation),
+        Reel.distinct('region.area', {
+          ...scopeBase,
+          'region.area': { $nin: [null, ''] },
+        }).collation(regionCollation),
+      ]);
+      const byNorm = new Map<string, string>();
+      for (const area of [
+        ...(curatedAreas ?? []),
+        ...(taggedLgas as string[]).map(String),
+        ...(taggedAreas as string[]).map(String),
+      ]) {
+        const normArea = area.trim().toLowerCase().replace(/\s+/g, ' ');
+        if (normArea && !byNorm.has(normArea)) byNorm.set(normArea, area);
+      }
+      areas = [...byNorm.values()].sort((a, b) => a.localeCompare(b));
+    }
+
+    // ---- Responders deployed (approved authority users in scope) ----
+    const responderQuery: Record<string, any> = {
+      role: 'authority',
+      authorizationStatus: 'approved',
+    };
+    if (country) responderQuery['region.country'] = { $in: expandRegionName(country) };
+    if (state) responderQuery['region.state'] = { $in: expandRegionName(state) };
+    if (selectedLga) responderQuery['region.lga'] = { $in: expandRegionName(selectedLga) };
+    const respondersDeployed = hasJurisdiction
+      ? await User.countDocuments(responderQuery).collation(regionCollation)
+      : await User.countDocuments({ role: 'authority', authorizationStatus: 'approved' });
+
+    return {
+      scope: { country: country ?? null, state: state ?? null, lga: lga && lga !== '__all__' ? lga : null },
+      areas,
+      stats: { activeEmergencies, catered, uncatered, falseReports, respondersDeployed },
+      severityBreakdown,
+      activityData,
+      mapReels,
+      pendingEmergencies,
+      center,
     };
   }
 }

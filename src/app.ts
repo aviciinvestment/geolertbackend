@@ -15,7 +15,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://geolertfrontend.onrend
 
 // CORS
 app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000'],
+  origin: [FRONTEND_URL, 'http://localhost:5173', 'https://localhost:5173', 'http://localhost:3000'],
   credentials: true,
 }));
 

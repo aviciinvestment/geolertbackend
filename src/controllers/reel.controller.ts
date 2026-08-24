@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import ReelService from '../services/reel.service';
 import fs from 'fs';
+import { User } from '../models/User';
 
 export class ReelController {
 
@@ -185,6 +186,48 @@ export class ReelController {
     } catch (error) {
       console.error('Analytics error:', error);
       res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
+    }
+  }
+
+  // GET /api/reels/jurisdiction?lga=<optional>
+  // Jurisdiction-scoped dashboard data for Super Admins / Admins.
+  async getJurisdictionDashboard(req: Request, res: Response): Promise<void> {
+    try {
+      const role = (req as any).user?.role;
+      if (!['superadmin', 'admin'].includes(role)) {
+        res.status(403).json({ success: false, message: 'Access denied for your role' });
+        return;
+      }
+
+      const account = await User.findById((req as any).user.id)
+        .select('jurisdiction region location')
+        .lean();
+
+      const jurisdiction: any = account?.jurisdiction || {};
+      // Admins are hard-scoped to the LGA they were onboarded for;
+      // Super Admins may freely pick any LGA within their state.
+      const lgaParam =
+        role === 'admin'
+          ? jurisdiction.lga || undefined
+          : typeof req.query.lga === 'string'
+            ? req.query.lga
+            : undefined;
+
+      let fallbackCenter: [number, number] | null = null;
+      const loc = account?.location?.coordinates;
+      if (loc && loc.length >= 2) fallbackCenter = [loc[1], loc[0]];
+
+      const data = await ReelService.getJurisdictionDashboard({
+        country: jurisdiction.country,
+        state: jurisdiction.state,
+        lga: lgaParam,
+        fallbackCenter,
+      });
+
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('Jurisdiction dashboard error:', error);
+      res.status(500).json({ success: false, message: 'Failed to fetch jurisdiction dashboard' });
     }
   }
 }

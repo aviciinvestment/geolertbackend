@@ -25,6 +25,13 @@ export interface IReel extends Document {
   };
   severity?: number;
   status?: 'pending' | 'attended' | 'false_report';
+  region?: {
+    country?: string;
+    state?: string;
+    lga?: string;
+    area?: string;
+  };
+  regionTagged?: boolean;
   createdAt: Date;
 }
 
@@ -60,9 +67,17 @@ const ReelSchema: Schema = new Schema({
   },
   severity: { type: Number, default: 0, min: 0, max: 1 },
   status: { type: String, enum: ['pending', 'attended', 'false_report'], default: 'pending' },
+  region: {
+    country: { type: String },
+    state: { type: String },
+    lga: { type: String },
+    area: { type: String },
+  },
+  regionTagged: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
 
 ReelSchema.index({ location: '2dsphere' });
+ReelSchema.index({ 'region.country': 1, 'region.state': 1, 'region.lga': 1 });
 
 export default mongoose.model<IReel>('Reel', ReelSchema);
