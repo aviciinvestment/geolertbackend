@@ -6,8 +6,16 @@ import { User, IUser } from '../models/User';
 import Reel from '../models/Reel';
 import cloudinary from '../utils/cloudinary';
 import { NIGERIA_LGAS } from '../data/nigeriaLGAs';
+import { isIncidentCategory } from '../data/incidentCategories';
+import { AuthorityPool } from '../services/incident.service';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+const JWT_SECRET = (() => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be set in production');
+  }
+  return secret || 'fallback_secret';
+})();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -27,12 +35,13 @@ const sanitizeUser = (user: IUser) => ({
   isAnonymous: user.isAnonymous,
   role: user.role,
   authorizationStatus: user.authorizationStatus,
+  specialization: user.specialization,
   jurisdiction: user.jurisdiction,
 });
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, specialization } = req.body;
 
     if (!name || !email || !password) {
       res.status(400).json({ success: false, message: 'Please provide all fields' });
@@ -43,6 +52,13 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       role && ['user', 'authority', 'admin', 'superadmin'].includes(role)
         ? role
         : 'user';
+
+    const requestedSpecialization =
+      requestedRole === 'authority' &&
+      specialization &&
+      isIncidentCategory(String(specialization))
+        ? String(specialization).toLowerCase()
+        : undefined;
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -78,6 +94,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       password: hashedPassword,
       role: requestedRole,
       authorizationStatus,
+      specialization: requestedSpecialization,
     });
 
     // Pending privileged accounts are NOT issued a token —
@@ -374,7 +391,7 @@ export const onboardAdmin = async (req: Request, res: Response): Promise<void> =
 // and they are always scoped to the admin's own State + LGA.
 export const onboardAuthority = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, specialization } = req.body;
 
     if (!name || !email || !password) {
       res.status(400).json({
@@ -383,6 +400,11 @@ export const onboardAuthority = async (req: Request, res: Response): Promise<voi
       });
       return;
     }
+
+    const responderSpecialization =
+      specialization && isIncidentCategory(String(specialization))
+        ? String(specialization).toLowerCase()
+        : 'general';
 
     const admin = await User.findById((req as any).user.id).select('jurisdiction');
     const jurisdiction: any = admin?.jurisdiction || {};
@@ -411,12 +433,15 @@ export const onboardAuthority = async (req: Request, res: Response): Promise<voi
       role: 'authority',
       authorizationStatus: 'approved',
       authorizedBy: (req as any).user.id,
+      specialization: responderSpecialization,
       jurisdiction: {
         country: jurisdiction.country || 'Nigeria',
         state: jurisdiction.state,
         lga: jurisdiction.lga,
       },
     });
+
+    AuthorityPool.invalidate();
 
     res.status(201).json({
       success: true,
@@ -495,6 +520,8 @@ export const reviewApproval = async (req: Request, res: Response): Promise<void>
     target.authorizationStatus = action === 'approve' ? 'approved' : 'rejected';
     target.authorizedBy = (req as any).user.id;
     await target.save();
+
+    if (target.role === 'authority') AuthorityPool.invalidate();
 
     res.status(200).json({
       success: true,

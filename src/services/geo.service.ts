@@ -45,12 +45,44 @@ const REGION_ALIASES: Record<string, string[]> = {
   ],
 };
 
+/**
+ * Known naming variants between the onboarding LGA lists and geocoders.
+ * OpenStreetMap reports Abuja's "Abuja Municipal" as "Municipal Area Council",
+ * which used to hide every report from Local Admin dashboards on a strict match.
+ */
+const LGA_ALIASES: Record<string, string[]> = {
+  'abuja municipal': [
+    'abuja municipal lga',
+    'municipal area council',
+    'abuja municipal area council',
+  ],
+  'municipal area council': [
+    'abuja municipal',
+    'abuja municipal lga',
+    'abuja municipal area council',
+  ],
+};
+
 /** Expand a region name into all accepted variants (original included). */
 export function expandRegionName(name?: string | null): string[] {
   if (!name) return [];
   const norm = name.trim().toLowerCase();
   const variants = new Set<string>([name]);
   for (const [key, aliases] of Object.entries(REGION_ALIASES)) {
+    if (norm === key || aliases.some((a) => a.toLowerCase() === norm)) {
+      variants.add(key);
+      aliases.forEach((a) => variants.add(a));
+    }
+  }
+  return [...variants];
+}
+
+/** Same as expandRegionName but for LGA-level names. */
+export function expandLgaName(name?: string | null): string[] {
+  if (!name) return [];
+  const norm = name.trim().toLowerCase();
+  const variants = new Set<string>([name]);
+  for (const [key, aliases] of Object.entries(LGA_ALIASES)) {
     if (norm === key || aliases.some((a) => a.toLowerCase() === norm)) {
       variants.add(key);
       aliases.forEach((a) => variants.add(a));

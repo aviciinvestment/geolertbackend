@@ -6,6 +6,8 @@ import reelRoutes from './routes/reel.routes';
 import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/user.routes';
 import geminiRoutes from './routes/gemini.routes';
+import broadcastRoutes from './routes/broadcast.routes';
+import notificationRoutes from './routes/notification.routes';
 
 dotenv.config();
 
@@ -31,6 +33,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/reels', reelRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/gemini', geminiRoutes);
+app.use('/api/broadcast', broadcastRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {

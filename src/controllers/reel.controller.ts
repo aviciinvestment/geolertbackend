@@ -2,8 +2,27 @@ import { Request, Response } from 'express';
 import ReelService from '../services/reel.service';
 import fs from 'fs';
 import { User } from '../models/User';
+import { getSubordinateUsers } from '../services/hierarchy.service';
+import { assignedReelsForAuthority } from '../services/incident.service';
 
 export class ReelController {
+
+  // GET /api/reels/assigned
+  // Only incidents routed to this Authority Responder (jurisdiction +
+  // specialization aware), shaped like the feed for the mission planner.
+  async getAssignedReels(req: Request, res: Response): Promise<void> {
+    try {
+      if ((req as any).user?.role !== 'authority') {
+        res.status(403).json({ success: false, message: 'Access denied for your role' });
+        return;
+      }
+      const reels = await assignedReelsForAuthority((req as any).user.id);
+      res.status(200).json({ success: true, data: reels });
+    } catch (error) {
+      console.error('Assigned reels error:', error);
+      res.status(500).json({ success: false, message: 'Failed to fetch assigned incidents' });
+    }
+  }
 
   // GET /api/reels/feed
   async getFeed(req: Request, res: Response): Promise<void> {
@@ -189,7 +208,7 @@ export class ReelController {
     }
   }
 
-  // GET /api/reels/jurisdiction?lga=<optional>
+  // GET /api/reels/jurisdiction?lga=<optional>&authorityId=<optional>&adminId=<optional>
   // Jurisdiction-scoped dashboard data for Super Admins / Admins.
   async getJurisdictionDashboard(req: Request, res: Response): Promise<void> {
     try {
@@ -200,7 +219,7 @@ export class ReelController {
       }
 
       const account = await User.findById((req as any).user.id)
-        .select('jurisdiction region location')
+        .select('jurisdiction region location role')
         .lean();
 
       const jurisdiction: any = account?.jurisdiction || {};
@@ -217,11 +236,48 @@ export class ReelController {
       const loc = account?.location?.coordinates;
       if (loc && loc.length >= 2) fallbackCenter = [loc[1], loc[0]];
 
-      const data = await ReelService.getJurisdictionDashboard({
+      // Super Admin → optionally narrow the whole dashboard to a specific
+      // Local Admin under them (scope matches that admin's state + LGA).
+      const adminId = typeof req.query.adminId === 'string' ? req.query.adminId : undefined;
+      let scopeOverride: { country?: string; state?: string; lga?: string } | null = null;
+      if (role === 'superadmin' && adminId) {
+        const subordinates = await getSubordinateUsers(account as any);
+        const targetAdmin = subordinates.find((a) => String(a._id) === adminId);
+        if (!targetAdmin) {
+          res.status(400).json({ success: false, message: 'Unknown or unauthorized Local Admin' });
+          return;
+        }
+        scopeOverride = {
+          country: (targetAdmin as any).jurisdiction?.country || jurisdiction.country,
+          state: (targetAdmin as any).jurisdiction?.state || jurisdiction.state,
+          lga: (targetAdmin as any).jurisdiction?.lga || undefined,
+        };
+      }
+
+      // Local Admin → optionally narrow everything to a specific authority
+      // responder under them (only that responder's reports are shown).
+      const authorityId =
+        typeof req.query.authorityId === 'string' ? req.query.authorityId : undefined;
+      if (role === 'admin' && authorityId) {
+        const subordinates = await getSubordinateUsers(account as any);
+        if (!subordinates.some((s) => String(s._id) === authorityId)) {
+          res.status(400).json({ success: false, message: 'Unknown or unauthorized Authority Responder' });
+          return;
+        }
+      }
+
+      const scope = scopeOverride || {
         country: jurisdiction.country,
         state: jurisdiction.state,
         lga: lgaParam,
+      };
+
+      const data = await ReelService.getJurisdictionDashboard({
+        country: scope.country,
+        state: scope.state,
+        lga: scope.lga,
         fallbackCenter,
+        authorityId: role === 'admin' ? authorityId : undefined,
       });
 
       res.status(200).json({ success: true, data });

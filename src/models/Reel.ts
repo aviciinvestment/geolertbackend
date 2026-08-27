@@ -24,6 +24,7 @@ export interface IReel extends Document {
     severityReason: string;
   };
   severity?: number;
+  category?: string;
   status?: 'pending' | 'attended' | 'false_report';
   region?: {
     country?: string;
@@ -66,6 +67,7 @@ const ReelSchema: Schema = new Schema({
     severityReason: { type: String, default: '' },
   },
   severity: { type: Number, default: 0, min: 0, max: 1 },
+  category: { type: String, default: 'general' },
   status: { type: String, enum: ['pending', 'attended', 'false_report'], default: 'pending' },
   region: {
     country: { type: String },

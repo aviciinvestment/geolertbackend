@@ -20,6 +20,12 @@ export const io = new Server(server, {
 io.on('connection', (socket) => {
   console.log(`New client connected: ${socket.id}`);
 
+  socket.on('join_user', (userId: string) => {
+    if (typeof userId === 'string' && userId) {
+      socket.join(`user:${userId}`);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`);
   });
@@ -43,4 +49,10 @@ const startServer = async () => {
   }
 };
 
-startServer();
+// Only boot the HTTP server when this file is the entrypoint. Services import
+// `io` from here; guarding keeps utility/test scripts from second-server crashes.
+if (require.main === module) {
+  startServer();
+} else {
+  console.log('[server] loaded as module (skipping startup)');
+}

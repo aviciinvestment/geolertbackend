@@ -11,6 +11,7 @@ router.use(protect);
 
 router.get('/analytics', ReelController.getAnalytics);
 router.get('/jurisdiction', ReelController.getJurisdictionDashboard);
+router.get('/assigned', ReelController.getAssignedReels);
 router.get('/feed', ReelController.getFeed);
 router.post('/upload', upload.single('video'), ReelController.uploadReel);
 router.post('/live', ReelController.startLiveStream);

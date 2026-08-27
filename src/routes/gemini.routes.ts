@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import Reel from '../models/Reel';
 import ReelService from '../services/reel.service';
+import { isIncidentCategory, classifyIncidentText } from '../data/incidentCategories';
+import { assignIncidentToAuthorities } from '../services/incident.service';
 
 const router = Router();
 
@@ -44,7 +46,11 @@ router.post('/batch-analyze', async (_req: Request, res: Response) => {
         console.log(`[Gemini Batch] Analyzing reel ${reel._id} (${reel.url.substring(0, 80)})...`);
         const result = await ReelService.analyzeVideo(reel.url);
 
-        await Reel.findByIdAndUpdate(reel._id, {
+        const category = isIncidentCategory(result.category)
+          ? result.category
+          : classifyIncidentText(`${result.summary}\n${result.description}\n${result.severityReason}`);
+
+        const updated = await Reel.findByIdAndUpdate(reel._id, {
           aiAnalysis: {
             summary: result.summary,
             transcript: result.transcript,
@@ -52,7 +58,17 @@ router.post('/batch-analyze', async (_req: Request, res: Response) => {
             severityReason: result.severityReason,
           },
           severity: result.severity,
-        });
+          category,
+        }, { new: true });
+
+        // Keep assignments in sync with the freshest analysis
+        if (updated) {
+          try {
+            await assignIncidentToAuthorities(updated);
+          } catch (err: any) {
+            console.error('[Gemini Batch] Incident routing failed (non-fatal):', err?.message || err);
+          }
+        }
 
         analyzed++;
         console.log(`[Gemini Batch] Reel ${reel._id} done. Severity: ${result.severity}`);

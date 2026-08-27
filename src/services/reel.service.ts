@@ -4,8 +4,10 @@ import View from '../models/View';
 import Comment, { IComment } from '../models/Comment';
 import cloudinary from '../utils/cloudinary';
 import { io } from '../server';
-import { reverseGeocode, geocodePlace, expandRegionName } from './geo.service';
+import { reverseGeocode, geocodePlace, expandRegionName, expandLgaName } from './geo.service';
 import { getAreaList, getAreaCoords, isKnownLga } from './lga.service';
+import { isIncidentCategory, classifyIncidentText } from '../data/incidentCategories';
+import { assignIncidentToAuthorities } from './incident.service';
 
 export class ReelService {
   /**
@@ -131,6 +133,7 @@ export class ReelService {
     description: string;
     severity: number;
     severityReason: string;
+    category: string;
   }> {
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
     const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -162,15 +165,17 @@ export class ReelService {
   "transcript": "Transcribe ALL speech word-for-word. If no speech, say 'No speech detected.'",
   "description": "Detailed visual description: setting, people, objects, actions, mood.",
   "severity": 0.0,
-  "severityReason": "Explain in 2-3 sentences why this rating. Address danger, urgency."
+  "severityReason": "Explain in 2-3 sentences why this rating. Address danger, urgency.",
+  "category": "Pick ONE from: fire, medical, police, rescue, flood, gas_hazard, traffic, building_collapse, general"
 }
 
 Severity scale:
 0.0-0.2 = Very mild, 0.3-0.4 = Low, 0.5-0.6 = Moderate, 0.7-0.8 = High (danger/crime/disaster), 0.9-1.0 = Critical (life-threatening)
+category: "fire" for fire/smoke/burning, "medical" for injuries/sickness/medical emergencies, "police" for crime/violence/security, "rescue" for people trapped/stranded/entrapped, "flood" for water/flooding, "gas_hazard" for gas/chemical/toxic leaks, "traffic" for road accidents/collisions, "building_collapse" for structural collapse, otherwise "general".
 Return ONLY the JSON object.`
     );
 
-    let summary = '', transcript = '', description = '', severityReason = '';
+    let summary = '', transcript = '', description = '', severityReason = '', category = 'general';
     let severity = 0;
     try {
       let cleaned = result.trim();
@@ -181,12 +186,18 @@ Return ONLY the JSON object.`
       description = parsed.description || '';
       severityReason = parsed.severityReason || '';
       severity = Math.max(0, Math.min(1, parseFloat(parsed.severity) || 0));
+      category = typeof parsed.category === 'string' ? parsed.category.toLowerCase() : 'general';
+      if (!isIncidentCategory(category)) {
+        // AI returned an off-list value → keyword fallback over its own text
+        category = classifyIncidentText(`${description}\n${summary}\n${severityReason}`);
+      }
     } catch {
       summary = result;
       severity = 0;
+      category = classifyIncidentText(result);
     }
 
-    return { summary, transcript, description, severity, severityReason };
+    return { summary, transcript, description, severity, severityReason, category };
   }
 
   /**
@@ -215,7 +226,7 @@ Return ONLY the JSON object.`
         console.log(`[Upload] AI analysis done. Severity: ${analysis.severity}`);
       } catch (err: any) {
         console.error('[Upload] AI analysis failed, saving reel with empty analysis:', err.message);
-        analysis = { summary: '', transcript: '', description: '', severity: 0, severityReason: '' };
+        analysis = { summary: '', transcript: '', description: '', severity: 0, severityReason: '', category: 'general' };
       }
 
       // Step 3: Fetch user data
@@ -257,6 +268,9 @@ Return ONLY the JSON object.`
           severityReason: analysis.severityReason,
         },
         severity: analysis.severity,
+        category: isIncidentCategory(analysis.category)
+          ? analysis.category
+          : classifyIncidentText(`${analysis.summary}\n${analysis.description}\n${analysis.severityReason}`),
         region: region || {},
         regionTagged: true,
       };
@@ -265,6 +279,15 @@ Return ONLY the JSON object.`
       await newReel.save();
 
       console.log(`[Upload] Reel saved with analysis. Severity: ${analysis.severity}`);
+
+      // Route to the Authority Responders who should respond, within their
+      // jurisdiction + specialization. Never blocks the upload on failure.
+      try {
+        await assignIncidentToAuthorities(newReel);
+      } catch (err: any) {
+        console.error('[Upload] Incident routing failed (non-fatal):', err?.message || err);
+      }
+
       io.emit('new_reel', newReel);
 
       return newReel;
@@ -475,13 +498,24 @@ Return ONLY the JSON object.`
           severityReason: analysis.severityReason,
         },
         severity: analysis.severity,
+        category: isIncidentCategory(analysis.category)
+          ? analysis.category
+          : classifyIncidentText(`${analysis.summary}\n${analysis.description}\n${analysis.severityReason}`),
       }, { new: true });
 
       if (updated) {
+        // Re-route so assignments stay in sync with the freshest analysis
+        try {
+          await assignIncidentToAuthorities(updated);
+        } catch (err: any) {
+          console.error('[AutoAnalyze] Incident routing failed (non-fatal):', err?.message || err);
+        }
+
         io.emit('reel_analysis_updated', {
           _id: updated._id,
           aiAnalysis: updated.aiAnalysis,
           severity: updated.severity,
+          category: updated.category,
         });
       }
 
@@ -670,22 +704,27 @@ Return ONLY the JSON object.`
     state?: string;
     lga?: string;
     fallbackCenter?: [number, number] | null;
+    authorityId?: string | null;
   }): Promise<any> {
-    const { country, state, lga } = opts;
+    const { country, state, lga, authorityId } = opts;
     const hasJurisdiction = Boolean(country && state);
     const selectedLga = lga && lga !== '__all__' ? lga : null;
 
     // Kick off (non-blocking) region tagging for untagged reports
     this.ensureRegionsBackfilled().catch(() => {});
 
+    // Optional: narrow everything to a single Authority Responder's reports
+    const authorityFilter = authorityId ? { userId: authorityId } : {};
+
     // ---- Tagged scope query ----
-    const scopeQuery: Record<string, any> = {};
+    const scopeQuery: Record<string, any> = { ...authorityFilter };
     if (country) scopeQuery['region.country'] = { $in: expandRegionName(country) };
     if (state) scopeQuery['region.state'] = { $in: expandRegionName(state) };
     if (selectedLga) {
-      // Match either the LGA name or a neighborhood/district (e.g. Gwarinpa)
+      // Match either the LGA name (with geocoder alias variants) or a
+      // neighborhood/district (e.g. Gwarinpa)
       scopeQuery.$or = [
-        { 'region.lga': { $in: expandRegionName(selectedLga) } },
+        { 'region.lga': { $in: expandLgaName(selectedLga) } },
         { 'region.area': selectedLga },
       ];
     }
@@ -695,13 +734,13 @@ Return ONLY the JSON object.`
     const taggedReels = hasJurisdiction
       ? await Reel.find(scopeQuery)
           .collation(regionCollation)
-          .select('severity status createdAt location region description url avatar username isAnonymous aiAnalysis.summary views likes comments')
+          .select('severity status createdAt location region description url avatar username isAnonymous userId aiAnalysis views likes comments')
           .sort({ createdAt: -1 })
           .limit(2000)
           .lean()
       : // No jurisdiction on the account → show everything
-        await Reel.find({})
-          .select('severity status createdAt location region description url avatar username isAnonymous aiAnalysis.summary views likes comments')
+        await Reel.find({ ...authorityFilter })
+          .select('severity status createdAt location region description url avatar username isAnonymous userId aiAnalysis views likes comments')
           .sort({ createdAt: -1 })
           .limit(2000)
           .lean();
@@ -744,11 +783,12 @@ Return ONLY the JSON object.`
         nearbyReels = await Reel.aggregate([
           {
             $geoNear: {
-              near: { type: 'Point', coordinates: center },
+              // GeoJSON requires [longitude, latitude]; `center` is [lat, lng]
+              near: { type: 'Point', coordinates: [center[1], center[0]] },
               distanceField: '_distanceM',
               maxDistance: radiusMeters,
               spherical: true,
-              query: { 'location.coordinates': { $exists: true } },
+              query: { 'location.coordinates': { $exists: true }, ...authorityFilter },
             },
           },
           { $limit: 300 },
@@ -917,10 +957,60 @@ Return ONLY the JSON object.`
     };
     if (country) responderQuery['region.country'] = { $in: expandRegionName(country) };
     if (state) responderQuery['region.state'] = { $in: expandRegionName(state) };
-    if (selectedLga) responderQuery['region.lga'] = { $in: expandRegionName(selectedLga) };
+    if (selectedLga) responderQuery['region.lga'] = { $in: expandLgaName(selectedLga) };
     const respondersDeployed = hasJurisdiction
       ? await User.countDocuments(responderQuery).collation(regionCollation)
       : await User.countDocuments({ role: 'authority', authorizationStatus: 'approved' });
+
+    // ---- Every scoped report (all statuses) with its full AI analysis ----
+    type ReportRow = {
+      _id: any;
+      status: string;
+      severity: number;
+      description?: string;
+      aiAnalysis?: any;
+      url: string;
+      avatar?: string;
+      username: string;
+      isAnonymous: boolean;
+      area?: string;
+      lga?: string;
+      state?: string;
+      latitude: number;
+      longitude: number;
+      userId?: string;
+      createdAt: Date;
+      views?: number;
+      likes?: number;
+      comments?: number;
+    };
+    const reports: ReportRow[] = [];
+    for (const r of reels.slice(0, 1000)) {
+      const coords = r.location?.coordinates;
+      if (!coords || coords.length < 2) continue;
+      const region = r.region as any;
+      reports.push({
+        _id: String(r._id),
+        status: r.status || 'pending',
+        severity: r.severity ?? 0,
+        description: r.description || '',
+        aiAnalysis: r.aiAnalysis || null,
+        url: r.url,
+        avatar: r.avatar,
+        username: r.isAnonymous ? 'Anonymous' : r.username,
+        isAnonymous: !!r.isAnonymous,
+        area: region?.area || undefined,
+        lga: region?.lga || undefined,
+        state: region?.state || undefined,
+        latitude: coords[1],
+        longitude: coords[0],
+        userId: r.userId ? String(r.userId) : undefined,
+        createdAt: r.createdAt,
+        views: r.views,
+        likes: r.likes,
+        comments: r.comments,
+      });
+    }
 
     return {
       scope: { country: country ?? null, state: state ?? null, lga: lga && lga !== '__all__' ? lga : null },
@@ -930,6 +1020,7 @@ Return ONLY the JSON object.`
       activityData,
       mapReels,
       pendingEmergencies,
+      reports,
       center,
     };
   }

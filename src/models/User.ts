@@ -13,6 +13,7 @@ export interface IUser extends Document {
   trustScore: number;
   role: UserRole;
   authorizationStatus: AuthorizationStatus;
+  specialization?: string;
   authorizedBy?: mongoose.Types.ObjectId;
   jurisdiction?: {
     country?: string;
@@ -53,6 +54,7 @@ const UserSchema: Schema = new Schema(
       enum: ['pending', 'approved', 'rejected'],
       default: 'approved',
     },
+    specialization: { type: String },
     authorizedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     jurisdiction: {
       country: { type: String },
