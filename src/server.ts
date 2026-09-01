@@ -8,11 +8,19 @@ const PORT = process.env.PORT || 5000;
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://geolertfrontend.onrender.com';
 
+const ALLOWED_ORIGINS = [
+  FRONTEND_URL,
+  'https://achivsecurities.vercel.app',
+  'http://localhost:5173',
+  'https://localhost:5173',
+  'http://localhost:3000',
+];
+
 const server = http.createServer(app);
 
 export const io = new Server(server, {
   cors: {
-    origin: [FRONTEND_URL, 'http://localhost:5173', 'https://localhost:5173', 'http://localhost:3000'],
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
   },
 });

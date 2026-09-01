@@ -15,9 +15,17 @@ const app = express();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://geolertfrontend.onrender.com';
 
+const ALLOWED_ORIGINS = [
+  FRONTEND_URL,
+  'https://achivsecurities.vercel.app',
+  'http://localhost:5173',
+  'https://localhost:5173',
+  'http://localhost:3000',
+];
+
 // CORS
 app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:5173', 'https://localhost:5173', 'http://localhost:3000'],
+  origin: ALLOWED_ORIGINS,
   credentials: true,
 }));
 
