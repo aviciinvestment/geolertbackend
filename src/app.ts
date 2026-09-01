@@ -8,7 +8,7 @@ import userRoutes from './routes/user.routes';
 import geminiRoutes from './routes/gemini.routes';
 import broadcastRoutes from './routes/broadcast.routes';
 import notificationRoutes from './routes/notification.routes';
-
+import founderRoutes from './routes/founder.routes';
 dotenv.config();
 
 const app = express();
@@ -35,7 +35,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/gemini', geminiRoutes);
 app.use('/api/broadcast', broadcastRoutes);
 app.use('/api/notifications', notificationRoutes);
-
+app.use('/api/founder', founderRoutes);
 // Health check
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok', message: 'Backend is running' });

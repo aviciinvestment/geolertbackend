@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-export type UserRole = 'user' | 'authority' | 'admin' | 'superadmin';
+export type UserRole = 'user' | 'authority' | 'admin' | 'superadmin' | 'founder';
 export type AuthorizationStatus = 'pending' | 'approved' | 'rejected';
 
 export interface IUser extends Document {
@@ -46,7 +46,7 @@ const UserSchema: Schema = new Schema(
     trustScore: { type: Number, default: 50, min: 0, max: 100 },
     role: {
       type: String,
-      enum: ['user', 'authority', 'admin', 'superadmin'],
+      enum: ['user', 'authority', 'admin', 'superadmin', 'founder'],
       default: 'user',
     },
     authorizationStatus: {
