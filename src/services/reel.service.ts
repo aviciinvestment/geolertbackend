@@ -8,6 +8,7 @@ import { reverseGeocode, geocodePlace, expandRegionName, expandLgaName } from '.
 import { getAreaList, getAreaCoords, isKnownLga } from './lga.service';
 import { isIncidentCategory, classifyIncidentText } from '../data/incidentCategories';
 import { assignIncidentToAuthorities } from './incident.service';
+import { maybePublishSevereIncident } from './linkedin.service';
 
 export class ReelService {
   /**
@@ -288,6 +289,13 @@ Return ONLY the JSON object.`
         console.error('[Upload] Incident routing failed (non-fatal):', err?.message || err);
       }
 
+      // Broadcast severe incidents to the brand's LinkedIn page (if enabled).
+      try {
+        await maybePublishSevereIncident(newReel);
+      } catch (err: any) {
+        console.error('[Upload] LinkedIn publish skipped (non-fatal):', err?.message || err);
+      }
+
       io.emit('new_reel', newReel);
 
       return newReel;
@@ -509,6 +517,13 @@ Return ONLY the JSON object.`
           await assignIncidentToAuthorities(updated);
         } catch (err: any) {
           console.error('[AutoAnalyze] Incident routing failed (non-fatal):', err?.message || err);
+        }
+
+        // Publish to LinkedIn once the freshest severity flags it as severe
+        try {
+          await maybePublishSevereIncident(updated);
+        } catch (err: any) {
+          console.error('[AutoAnalyze] LinkedIn publish skipped (non-fatal):', err?.message || err);
         }
 
         io.emit('reel_analysis_updated', {

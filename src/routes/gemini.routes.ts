@@ -3,6 +3,7 @@ import Reel from '../models/Reel';
 import ReelService from '../services/reel.service';
 import { isIncidentCategory, classifyIncidentText } from '../data/incidentCategories';
 import { assignIncidentToAuthorities } from '../services/incident.service';
+import { maybePublishSevereIncident } from '../services/linkedin.service';
 
 const router = Router();
 
@@ -67,6 +68,13 @@ router.post('/batch-analyze', async (_req: Request, res: Response) => {
             await assignIncidentToAuthorities(updated);
           } catch (err: any) {
             console.error('[Gemini Batch] Incident routing failed (non-fatal):', err?.message || err);
+          }
+
+          // Publish once the analysis flags the incident as severe
+          try {
+            await maybePublishSevereIncident(updated);
+          } catch (err: any) {
+            console.error('[Gemini Batch] LinkedIn publish skipped (non-fatal):', err?.message || err);
           }
         }
 

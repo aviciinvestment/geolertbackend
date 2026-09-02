@@ -33,6 +33,10 @@ export interface IReel extends Document {
     area?: string;
   };
   regionTagged?: boolean;
+  linkedinPosted?: boolean;
+  linkedinPostId?: string;
+  linkedinPostUrl?: string;
+  linkedinPostedAt?: Date;
   createdAt: Date;
 }
 
@@ -76,6 +80,10 @@ const ReelSchema: Schema = new Schema({
     area: { type: String },
   },
   regionTagged: { type: Boolean, default: false },
+  linkedinPosted: { type: Boolean, default: false },
+  linkedinPostId: { type: String, default: null },
+  linkedinPostUrl: { type: String, default: null },
+  linkedinPostedAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 

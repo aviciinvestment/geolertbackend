@@ -185,6 +185,54 @@ export async function reverseGeocode(lat: number, lng: number): Promise<RegionIn
   return region;
 }
 
+const addressCache = new Map<string, string | null>();
+
+/**
+ * Resolve lat/lng into a human-readable street address ("display_name"), e.g.
+ * "12 Gwarinpa Estate, Abuja Municipal, Federal Capital Territory, Nigeria".
+ * Uses Nominatim's formatted label first, then BigDataCloud, and falls back
+ * to composing the administrative region. Returns null when unresolved.
+ */
+export async function reverseGeocodeAddress(lat: number, lng: number): Promise<string | null> {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const key = `${roundCoord(lat)},${roundCoord(lng)}`;
+  if (addressCache.has(key)) return addressCache.get(key)!;
+
+  let label: string | null = null;
+
+  await throttle();
+  const nom = await fetchJson(
+    `${NOMINATIM_REVERSE}?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+    { 'User-Agent': USER_AGENT }
+  );
+  if (typeof nom?.display_name === 'string' && nom.display_name) {
+    label = nom.display_name;
+  }
+
+  if (!label) {
+    const d = await fetchJson(
+      `${BDC_BASE}?latitude=${lat}&longitude=${lng}&localityLanguage=en`
+    );
+    if (typeof d?.localityLanguageRequested === 'string' && d.localityLanguageRequested) {
+      label = d.localityLanguageRequested;
+    } else if (d) {
+      label = [d.city, d.principalSubdivision, d.countryName].filter(Boolean).join(', ') || null;
+    }
+  }
+
+  if (!label) {
+    const region = await reverseGeocode(lat, lng);
+    if (region) {
+      const parts = [region.area, region.lga, region.state, region.country].filter(Boolean);
+      label = parts.join(', ') || null;
+    }
+  }
+
+  addressCache.set(key, label);
+  return label;
+}
+
 /** Forward geocode a place name (optionally qualified by country) to [lat, lng]. */
 export async function geocodePlace(name: string, country?: string): Promise<[number, number] | null> {
   if (!name) return null;
