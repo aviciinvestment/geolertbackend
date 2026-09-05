@@ -165,13 +165,26 @@ export class ReelService {
   "summary": "Detailed explanation of what is happening, context, and notable events.",
   "transcript": "Transcribe ALL speech word-for-word. If no speech, say 'No speech detected.'",
   "description": "Detailed visual description: setting, people, objects, actions, mood.",
-  "severity": 0.0,
+  "visualSeverity": 0.0,
+  "speechSeverity": 0.0,
   "severityReason": "Explain in 2-3 sentences why this rating. Address danger, urgency.",
   "category": "Pick ONE from: fire, medical, police, rescue, flood, gas_hazard, traffic, building_collapse, general"
 }
 
-Severity scale:
+IMPORTANT: You MUST rate visual and speech severity SEPARATELY.
+
+"visualSeverity" = what you CAN SEE happening in the video frames (destruction, fire, flooding, violence, injuries, chaos).
+"speechSeverity" = what is being SAID in the audio (someone describing a disaster, screaming for help, reporting danger).
+
+Both use this scale:
 0.0-0.2 = Very mild, 0.3-0.4 = Low, 0.5-0.6 = Moderate, 0.7-0.8 = High (danger/crime/disaster), 0.9-1.0 = Critical (life-threatening)
+
+Rules:
+- If the video VISUALLY shows a true disaster (fire, flood, collapse, violence, injuries), set visualSeverity high (0.7+).
+- If ONLY the speech describes a disaster but the video does NOT show it visually, set speechSeverity high but keep visualSeverity low (<=0.5).
+- Do NOT inflate visualSeverity based on what someone says — only what you literally see in the frames.
+- Do NOT inflate speechSeverity based on what you see — only what is said.
+
 category: "fire" for fire/smoke/burning, "medical" for injuries/sickness/medical emergencies, "police" for crime/violence/security, "rescue" for people trapped/stranded/entrapped, "flood" for water/flooding, "gas_hazard" for gas/chemical/toxic leaks, "traffic" for road accidents/collisions, "building_collapse" for structural collapse, otherwise "general".
 Return ONLY the JSON object.`
     );
@@ -186,11 +199,29 @@ Return ONLY the JSON object.`
       transcript = parsed.transcript || '';
       description = parsed.description || '';
       severityReason = parsed.severityReason || '';
-      severity = Math.max(0, Math.min(1, parseFloat(parsed.severity) || 0));
       category = typeof parsed.category === 'string' ? parsed.category.toLowerCase() : 'general';
       if (!isIncidentCategory(category)) {
-        // AI returned an off-list value → keyword fallback over its own text
         category = classifyIncidentText(`${description}\n${summary}\n${severityReason}`);
+      }
+
+      // --- Dual-signal severity fusion ---
+      // Visual severity is the primary driver. Speech severity can only
+      // contribute up to a cap when the video itself does NOT confirm
+      // the disaster visually.
+      const visualSev = Math.max(0, Math.min(1, parseFloat(parsed.visualSeverity) || 0));
+      const speechSev = Math.max(0, Math.min(1, parseFloat(parsed.speechSeverity) || 0));
+
+      if (visualSev >= 0.7) {
+        // Video confirms disaster — use visual severity (may reach HIGH/CRITICAL)
+        severity = visualSev;
+      } else if (speechSev >= 0.7 && visualSev < 0.5) {
+        // Speech signals disaster but video does NOT confirm it visually.
+        // Cap at MEDIUM (0.55) so it never reaches HIGH from speech alone.
+        severity = Math.min(0.55, speechSev);
+        severityReason = `[Speech-only signal — video does not visually confirm] ${severityReason}`;
+      } else {
+        // Both low, or both moderate — take the higher of the two
+        severity = Math.max(visualSev, speechSev);
       }
     } catch {
       summary = result;
