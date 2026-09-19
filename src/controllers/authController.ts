@@ -1,27 +1,11 @@
 import { Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import { OAuth2Client } from 'google-auth-library';
 import { User, IUser } from '../models/User';
 import Reel from '../models/Reel';
 import cloudinary from '../utils/cloudinary';
 import { NIGERIA_LGAS } from '../data/nigeriaLGAs';
 import { isIncidentCategory } from '../data/incidentCategories';
 import { AuthorityPool } from '../services/incident.service';
-
-const JWT_SECRET = (() => {
-  const secret = process.env.JWT_SECRET;
-  if (!secret && process.env.NODE_ENV === 'production') {
-    throw new Error('JWT_SECRET must be set in production');
-  }
-  return secret || 'fallback_secret';
-})();
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const client = new OAuth2Client(GOOGLE_CLIENT_ID);
-
-const generateToken = (userId: string) => {
-  return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '7d' });
-};
+import { firebaseAdminAuth } from '../services/firebase.service';
 
 // Roles that require authorization from a superior before they may log in
 const GATED_ROLES = ['authority', 'admin', 'superadmin'];
@@ -41,9 +25,27 @@ const sanitizeUser = (user: IUser) => ({
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, email, password, role, specialization } = req.body;
+    const { name, email, role, specialization } = req.body;
+    
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
 
-    if (!name || !email || !password) {
+    if (!token) {
+      res.status(401).json({ success: false, message: 'No token provided' });
+      return;
+    }
+
+    const decodedToken = await firebaseAdminAuth.verifyIdToken(token);
+    const tokenEmail = decodedToken.email;
+
+    if (!tokenEmail || tokenEmail !== email) {
+      res.status(400).json({ success: false, message: 'Token email mismatch' });
+      return;
+    }
+
+    if (!name || !email) {
       res.status(400).json({ success: false, message: 'Please provide all fields' });
       return;
     }
@@ -72,15 +74,11 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       if (existingSuperAdmin) {
         res.status(403).json({
           success: false,
-          message:
-            'A Super Admin already exists. New Super Admins can only be onboarded by an existing Super Admin.',
+          message: 'A Super Admin already exists. New Super Admins can only be onboarded by an existing Super Admin.',
         });
         return;
       }
     }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
 
     // Admins & Authority Responders start pending until their superior approves them
     const authorizationStatus =
@@ -91,14 +89,11 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     const user = await User.create({
       name,
       email,
-      password: hashedPassword,
       role: requestedRole,
       authorizationStatus,
       specialization: requestedSpecialization,
     });
 
-    // Pending privileged accounts are NOT issued a token —
-    // they must wait for authorization before logging in
     if (authorizationStatus === 'pending') {
       res.status(201).json({
         success: true,
@@ -111,11 +106,8 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const token = generateToken(user.id);
-
     res.status(201).json({
       success: true,
-      token,
       user: sanitizeUser(user),
     });
   } catch (error) {
@@ -126,26 +118,37 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email, password } = req.body;
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
 
-    if (!email || !password) {
-      res.status(400).json({ success: false, message: 'Please provide email and password' });
+    if (!token) {
+      res.status(401).json({ success: false, message: 'No token provided' });
       return;
     }
 
-    const user = await User.findOne({ email });
-    if (!user || !user.password) {
-      res.status(401).json({ success: false, message: 'Invalid credentials' });
+    const decodedToken = await firebaseAdminAuth.verifyIdToken(token);
+    const email = decodedToken.email;
+
+    if (!email) {
+      res.status(400).json({ success: false, message: 'Invalid token' });
       return;
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      res.status(401).json({ success: false, message: 'Invalid credentials' });
-      return;
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      // Auto-create user for Google logins that bypass explicit register
+      const name = decodedToken.name || email.split('@')[0];
+      user = await User.create({
+        name,
+        email,
+        role: 'user',
+        authorizationStatus: 'approved'
+      });
     }
 
-    // Privileged roles cannot log in until authorized by their superior
     if (GATED_ROLES.includes(user.role)) {
       if (user.authorizationStatus === 'pending') {
         res.status(403).json({
@@ -170,11 +173,8 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       }
     }
 
-    const token = generateToken(user.id);
-
     res.status(200).json({
       success: true,
-      token,
       user: sanitizeUser(user),
     });
   } catch (error) {
@@ -183,57 +183,8 @@ export const login = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-export const googleLogin = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { credential } = req.body;
-
-    if (!credential) {
-      res.status(400).json({ success: false, message: 'Google credential missing' });
-      return;
-    }
-
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: GOOGLE_CLIENT_ID,
-    });
-
-    const payload = ticket.getPayload();
-    if (!payload) {
-      res.status(400).json({ success: false, message: 'Invalid Google token' });
-      return;
-    }
-
-    const { sub, email, name, picture } = payload;
-
-    let user = await User.findOne({ email });
-
-    if (!user) {
-      // Create new user if not exists
-      user = await User.create({
-        name: name || 'Google User',
-        email,
-        googleId: sub,
-        avatar: picture,
-      });
-    } else if (!user.googleId) {
-      // Link Google account to existing user
-      user.googleId = sub;
-      if (!user.avatar) user.avatar = picture;
-      await user.save();
-    }
-
-    const token = generateToken(user.id);
-
-    res.status(200).json({
-      success: true,
-      token,
-      user: sanitizeUser(user),
-    });
-  } catch (error) {
-    console.error('Google Login Error:', error);
-    res.status(500).json({ success: false, message: 'Server error during Google Login' });
-  }
-};
+// googleLogin is now just an alias for login since both use Firebase ID Tokens sent via Authorization header
+export const googleLogin = login;
 
 export const getMe = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -308,13 +259,16 @@ export const onboardSuperAdmin = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // Create user in Firebase Auth
+    await firebaseAdminAuth.createUser({
+      email,
+      password,
+      displayName: name,
+    });
 
     const user = await User.create({
       name,
       email,
-      password: hashedPassword,
       role: 'superadmin',
       authorizationStatus: 'approved',
       authorizedBy: (req as any).user.id,
@@ -362,13 +316,16 @@ export const onboardAdmin = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // Create user in Firebase Auth
+    await firebaseAdminAuth.createUser({
+      email,
+      password,
+      displayName: name,
+    });
 
     const user = await User.create({
       name,
       email,
-      password: hashedPassword,
       role: 'admin',
       authorizationStatus: 'approved',
       authorizedBy: (req as any).user.id,
@@ -423,13 +380,16 @@ export const onboardAuthority = async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // Create user in Firebase Auth
+    await firebaseAdminAuth.createUser({
+      email,
+      password,
+      displayName: name,
+    });
 
     const user = await User.create({
       name,
       email,
-      password: hashedPassword,
       role: 'authority',
       authorizationStatus: 'approved',
       authorizedBy: (req as any).user.id,

@@ -1,20 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import { firebaseAdminAuth } from '../services/firebase.service';
 import { User } from '../models/User';
-
-const JWT_SECRET = (() => {
-  const secret = process.env.JWT_SECRET;
-  if (!secret && process.env.NODE_ENV === 'production') {
-    throw new Error('JWT_SECRET must be set in production');
-  }
-  return secret || 'fallback_secret';
-})();
 
 export interface AuthRequest extends Request {
   user?: {
     id: string;
     role: string;
     authorizationStatus: string;
+    email: string;
   };
 }
 
@@ -35,22 +28,27 @@ export const protect = async (
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+    const decodedToken = await firebaseAdminAuth.verifyIdToken(token);
 
-    // Load the live user so role/status revocations apply instantly
-    const user = await User.findById(decoded.id).select('role authorizationStatus');
+    // Find the user by their email (since we migrate from custom to firebase)
+    let user = await User.findOne({ email: decodedToken.email }).select('_id role authorizationStatus email');
+    
+    // If not found, maybe they just registered but haven't synced yet.
+    // The sync route handles this. But for general protected routes, we deny access.
     if (!user) {
-      res.status(401).json({ success: false, message: 'Not authorized to access this route' });
+      res.status(401).json({ success: false, message: 'User not found in system. Please log in again to sync.' });
       return;
     }
 
     req.user = {
-      id: decoded.id,
+      id: String(user._id),
       role: user.role,
       authorizationStatus: user.authorizationStatus,
+      email: user.email,
     };
     next();
   } catch (error) {
+    console.error('Token verification error:', error);
     res.status(401).json({ success: false, message: 'Not authorized to access this route' });
   }
 };
