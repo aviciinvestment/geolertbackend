@@ -1,0 +1,68 @@
+Error connecting to MongoDB: MongooseServerSelectionError: connect ECONNREFUSED 127.0.0.1:27017
+    at _handleConnectionErrors (C:\Users\HP\OneDrive\Desktop\geolert\server\node_modules\mongoose\lib\connection.js:1175:11)
+    at NativeConnection.openUri (C:\Users\HP\OneDrive\Desktop\geolert\server\node_modules\mongoose\lib\connection.js:1106:11)
+    at async connectDB (C:\Users\HP\OneDrive\Desktop\geolert\server\src\utils\db.ts:7:5)
+    at async startServer (C:\Users\HP\OneDrive\Desktop\geolert\server\src\server.ts:44:5) {
+  errorLabelSet: Set(0) {},
+  reason: TopologyDescription {
+    type: 'Unknown',
+    servers: Map(1) { '127.0.0.1:27017' => [ServerDescription] },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: null,
+    maxElectionId: null,
+    maxSetVersion: null,
+    commonWireVersion: 0,
+    logicalSessionTimeoutMinutes: null
+  },
+  code: undefined,
+  cause: TopologyDescription {
+    type: 'Unknown',
+    servers: Map(1) { '127.0.0.1:27017' => [ServerDescription] },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: null,
+    maxElectionId: null,
+    maxSetVersion: null,
+    commonWireVersion: 0,
+    logicalSessionTimeoutMinutes: null
+  }
+}
+Failed to start server: MongooseServerSelectionError: connect ECONNREFUSED 127.0.0.1:27017
+    at _handleConnectionErrors (C:\Users\HP\OneDrive\Desktop\geolert\server\node_modules\mongoose\lib\connection.js:1175:11)
+    at NativeConnection.openUri (C:\Users\HP\OneDrive\Desktop\geolert\server\node_modules\mongoose\lib\connection.js:1106:11)
+    at async connectDB (C:\Users\HP\OneDrive\Desktop\geolert\server\src\utils\db.ts:7:5)
+    at async startServer (C:\Users\HP\OneDrive\Desktop\geolert\server\src\server.ts:44:5) {
+  errorLabelSet: Set(0) {},
+  reason: TopologyDescription {
+    type: 'Unknown',
+    servers: Map(1) { '127.0.0.1:27017' => [ServerDescription] },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: null,
+    maxElectionId: null,
+    maxSetVersion: null,
+    commonWireVersion: 0,
+    logicalSessionTimeoutMinutes: null
+  },
+  code: undefined,
+  cause: TopologyDescription {
+    type: 'Unknown',
+    servers: Map(1) { '127.0.0.1:27017' => [ServerDescription] },
+    stale: false,
+    compatible: true,
+    heartbeatFrequencyMS: 10000,
+    localThresholdMS: 15,
+    setName: null,
+    maxElectionId: null,
+    maxSetVersion: null,
+    commonWireVersion: 0,
+    logicalSessionTimeoutMinutes: null
+  }
+}

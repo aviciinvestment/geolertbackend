@@ -1,0 +1,6 @@
+
+> server@1.0.0 dev
+> npx tsx watch src/server.ts
+
+◇ injected env (6) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+◇ injected env (0) from .env // tip: ⌁ auth for agents [www.vestauth.com]
