@@ -50,10 +50,14 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    const isFounder = process.env.FOUNDER_EMAIL && email.toLowerCase() === process.env.FOUNDER_EMAIL.toLowerCase();
+
     const requestedRole =
-      role && ['user', 'authority', 'admin', 'superadmin'].includes(role)
-        ? role
-        : 'user';
+      isFounder
+        ? 'founder'
+        : (role && ['user', 'authority', 'admin', 'superadmin'].includes(role)
+          ? role
+          : 'user');
 
     const requestedSpecialization =
       requestedRole === 'authority' &&
@@ -138,15 +142,22 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     let user = await User.findOne({ email });
 
+    const isFounder = process.env.FOUNDER_EMAIL && email.toLowerCase() === process.env.FOUNDER_EMAIL.toLowerCase();
+
     if (!user) {
       // Auto-create user for Google logins that bypass explicit register
       const name = decodedToken.name || email.split('@')[0];
       user = await User.create({
         name,
         email,
-        role: 'user',
+        role: isFounder ? 'founder' : 'user',
         authorizationStatus: 'approved'
       });
+    } else if (isFounder && user.role !== 'founder') {
+      // Auto-upgrade existing user to founder if they match the env variable
+      user.role = 'founder';
+      user.authorizationStatus = 'approved';
+      await user.save();
     }
 
     if (GATED_ROLES.includes(user.role)) {
