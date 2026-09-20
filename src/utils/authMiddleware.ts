@@ -53,6 +53,11 @@ export const protect = async (
   }
 };
 
+export const isFounderEmail = (email?: string): boolean => {
+  const founderEmail = (process.env.FOUNDER_EMAIL || '').trim().toLowerCase();
+  return Boolean(founderEmail && email && email.trim().toLowerCase() === founderEmail);
+};
+
 export const authorize = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
@@ -60,7 +65,20 @@ export const authorize = (...roles: string[]) => {
       return;
     }
 
-    if (!roles.includes(req.user.role)) {
+    const founderEmail = isFounderEmail(req.user.email);
+
+    let allowed: boolean;
+    if (roles.includes('founder')) {
+      // Founder-only area is reserved for the configured founder email with the founder role.
+      allowed = founderEmail && req.user.role === 'founder';
+    } else if (founderEmail) {
+      // The founder email may act in every other staff role.
+      allowed = true;
+    } else {
+      allowed = roles.includes(req.user.role);
+    }
+
+    if (!allowed) {
       res.status(403).json({ success: false, message: 'Access denied for your role' });
       return;
     }
